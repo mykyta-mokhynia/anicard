@@ -3,6 +3,7 @@ import { executeQuery, selectQuery } from '../db';
 
 /**
  * Сохраняет или обновляет ответ пользователя на опросник
+ * Если optionIds пустой массив - удаляет запись (пользователь убрал голос)
  */
 export async function savePollAnswer(
   pollId: string,
@@ -12,7 +13,7 @@ export async function savePollAnswer(
 ): Promise<void> {
   // Сначала находим ID опросника в нашей базе
   const pollQuery = `
-    SELECT id FROM polls 
+    SELECT id, poll_date FROM polls 
     WHERE poll_id = ?
     LIMIT 1
   `;
@@ -24,7 +25,30 @@ export async function savePollAnswer(
   }
 
   const dbPollId = poll.id;
-  const dateStr = pollDate.toISOString().split('T')[0]; // YYYY-MM-DD
+  
+  // Используем дату из БД (poll.poll_date), так как она уже сохранена с учетом часового пояса группы
+  // poll_date может быть строкой формата YYYY-MM-DD или Date объектом
+  let dateStr: string;
+  if (poll.pollDate instanceof Date) {
+    dateStr = poll.pollDate.toISOString().split('T')[0];
+  } else if (typeof poll.pollDate === 'string') {
+    dateStr = poll.pollDate.split('T')[0]; // На случай, если есть время
+  } else {
+    // Fallback: используем дату из параметра
+    dateStr = pollDate.toISOString().split('T')[0];
+  }
+
+  // Если optionIds пустой массив - пользователь убрал голос, удаляем запись
+  if (optionIds.length === 0) {
+    const deleteQuery = `
+      DELETE FROM poll_answers 
+      WHERE poll_id = ? AND user_id = ?
+    `;
+    
+    await executeQuery(deleteQuery, [dbPollId, userId]);
+    console.log(`[PollAnswersService] ✅ Deleted answer for user ${userId} on poll ${pollId} (user removed vote)`);
+    return;
+  }
 
   // Сохраняем или обновляем ответ
   const upsertQuery = `
@@ -42,7 +66,7 @@ export async function savePollAnswer(
     dateStr,
   ]);
 
-  console.log(`[PollAnswersService] ✅ Saved/updated answer for user ${userId} on poll ${pollId}`);
+  console.log(`[PollAnswersService] ✅ Saved/updated answer for user ${userId} on poll ${pollId}: options ${optionIds.join(', ')}`);
 }
 
 /**
@@ -54,19 +78,41 @@ export async function savePollInfo(
   pollId: string,
   pollType: 'clan_battles' | 'demon_battles',
   question: string,
-  pollDate: Date
+  pollDate: Date,
+  pinnedMessageId?: number | null
 ): Promise<void> {
-  // Используем SQL CURDATE() для получения даты в часовом поясе сервера БД
-  // Это гарантирует, что дата будет одинаковой при сохранении и поиске
-  const { executeQuery } = await import('../db');
+  // Получаем часовой пояс группы для правильного определения даты
+  const { selectQuery, executeQuery } = await import('../db');
+  
+  // Получаем настройки группы для определения часового пояса
+  const settingsQuery = `SELECT timezone FROM group_settings WHERE group_id = ? LIMIT 1`;
+  const settings = await selectQuery(settingsQuery, [groupId], false);
+  const timezone = settings?.timezone || 'Europe/Kiev';
+
+  // Получаем дату в формате YYYY-MM-DD с учетом часового пояса группы
+  const { getDateStringInTimezone } = await import('../utils/dateHelpers');
+  const dateStr = getDateStringInTimezone(timezone);
 
   // Если topicId не указан, используем 1 для общего чата
   const finalTopicId = topicId !== undefined ? topicId : 1;
 
+  // Если pinnedMessageId указан, обновляем его для всех polls за сегодня с таким же group_id и topic_id
+  if (pinnedMessageId) {
+    const updatePinnedQuery = `
+      UPDATE polls
+      SET pinned_message_id = ?
+      WHERE group_id = ?
+        AND topic_id = ?
+        AND poll_date = ?
+    `;
+    await executeQuery(updatePinnedQuery, [pinnedMessageId, groupId, finalTopicId, dateStr]);
+  }
+
   const query = `
-    INSERT INTO polls (group_id, topic_id, poll_id, poll_type, question, poll_date)
-    VALUES (?, ?, ?, ?, ?, CURDATE())
+    INSERT INTO polls (group_id, topic_id, poll_id, poll_type, question, poll_date, pinned_message_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE
+      pinned_message_id = COALESCE(?, pinned_message_id),
       updated_at = CURRENT_TIMESTAMP
   `;
 
@@ -76,9 +122,12 @@ export async function savePollInfo(
     pollId,
     pollType,
     question,
+    dateStr, // Используем дату с учетом часового пояса группы
+    pinnedMessageId || null,
+    pinnedMessageId || null, // Для ON DUPLICATE KEY UPDATE
   ]);
 
-  console.log(`[PollAnswersService] ✅ Saved poll info: ${pollType} (ID: ${pollId}) for group ${groupId}`);
+  console.log(`[PollAnswersService] ✅ Saved poll info: ${pollType} (ID: ${pollId}) for group ${groupId}, date: ${dateStr} (timezone: ${timezone})`);
 }
 
 /**

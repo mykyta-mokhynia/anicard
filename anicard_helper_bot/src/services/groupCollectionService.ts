@@ -17,28 +17,31 @@ export async function getUsersNotAnswered(
   // Опросник в день всегда один на группу
   // ВАЖНО: Фильтруем по group_id для изоляции данных между группами
   // ВАЖНО: НЕ фильтруем по topic_id, так как опросник один на группу в день
-  // ВАЖНО: Используем CURDATE() для получения даты в часовом поясе сервера БД
+  // ВАЖНО: Используем дату с учетом часового пояса группы
+  const { getGroupDateString } = await import('../utils/pollDateHelpers');
+  const todayDate = await getGroupDateString(groupId);
+  
   const pollQuery = `
     SELECT id, poll_id, topic_id, poll_date
     FROM polls 
     WHERE group_id = ? 
       AND poll_type = ?
-      AND poll_date = CURDATE()
+      AND poll_date = ?
     ORDER BY id DESC
     LIMIT 1
   `;
-  const poll = await selectQuery(pollQuery, [groupId, battleType], false);
+  const poll = await selectQuery(pollQuery, [groupId, battleType, todayDate], false);
 
-  if (!poll) {
-    // Проверяем, есть ли вообще опросники для этой группы сегодня (для отладки)
-    const debugQuery = `
-      SELECT id, poll_id, topic_id, poll_date, poll_type
-      FROM polls 
-      WHERE group_id = ? 
-        AND poll_date = CURDATE()
-      ORDER BY id DESC
-    `;
-    const allPollsToday = await selectQuery(debugQuery, [groupId]);
+    if (!poll) {
+      // Проверяем, есть ли вообще опросники для этой группы сегодня (для отладки)
+      const debugQuery = `
+        SELECT id, poll_id, topic_id, poll_date, poll_type
+        FROM polls 
+        WHERE group_id = ? 
+          AND poll_date = ?
+        ORDER BY id DESC
+      `;
+      const allPollsToday = await selectQuery(debugQuery, [groupId, todayDate]);
     console.log(`[GroupCollection] No poll found for today (group ${groupId}, topic ${topicId}, type ${battleType}, CURDATE() in DB)`);
     console.log(`[GroupCollection] Debug: Found ${allPollsToday.length} poll(s) for group ${groupId} today:`, allPollsToday.map((p: any) => ({
       id: p.id,
@@ -63,13 +66,25 @@ export async function getUsersNotAnswered(
   const answeredUsers = await selectQuery(answeredQuery, [poll.id]);
   const answeredUserIds = new Set<number>(answeredUsers.map((u: any) => Number(u.userId)));
 
-  // Получаем список всех активных участников группы из нашей БД
-  // ВАЖНО: getActiveGroupMembers фильтрует по group_id
-  const { getActiveGroupMembers } = await import('./groupMembersService');
-  const allMembers = await getActiveGroupMembers(groupId);
+  // Получаем список всех активных участников группы из нашей БД (только со статусом 'member')
+  // ВАЖНО: Для /group команды нужны только пользователи со статусом 'member' (без 'off')
+  // Поэтому делаем прямой запрос, так как getActiveGroupMembers теперь возвращает всех кроме 'left'
+  const allMembersQuery = `
+    SELECT user_id, first_name, last_name, username
+    FROM group_members
+    WHERE group_id = ? AND status = 'member'
+    ORDER BY first_name, username, user_id
+  `;
+  const allMembersRows = await selectQuery(allMembersQuery, [groupId]);
+  const allMembers = allMembersRows.map((row: any) => ({
+    userId: row.userId,
+    firstName: row.firstName || undefined,
+    lastName: row.lastName || undefined,
+    username: row.username || undefined,
+  }));
 
-  // Находим тех, кто не ответил на опросник
-  const notAnswered = allMembers.filter(member => !answeredUserIds.has(member.userId));
+  // Находим тех, кто не ответил на опросник (исключаем пользователей со статусом 'off')
+  const notAnswered = allMembers.filter((member: { userId: number }) => !answeredUserIds.has(member.userId));
 
   return notAnswered;
 }
@@ -102,17 +117,21 @@ function formatNotAnsweredUsers(users: Array<{ userId: number; firstName?: strin
     // Экранируем имя для HTML
     const escapedName = escapeHtml(name);
     if (user.username) {
-      // Username экранируем тоже, но БЕЗ символа @ (чтобы не было упоминаний)
+      // Показываем имя и username БЕЗ @ в скобках (для сообщения /group)
       const escapedUsername = escapeHtml(user.username);
       return `${index + 1}. ${escapedName} (${escapedUsername})`;
     }
+    // Если нет username, показываем только имя
     if (!name) {
       return `${index + 1}. Пользователь ${user.userId}`;
     }
     return `${index + 1}. ${escapedName}`;
   }).join('\n');
 
-  return `📋 <b>Не отметились (${users.length}):</b>\n\n${userList}`;
+  // Используем цитату для списка неотметившихся
+  // К сожалению, Telegram не поддерживает раскрывающиеся списки внутри цитат
+  // Используем простую цитату
+  return `<blockquote expandable>📋 <b>Не отметились (${users.length}):</b>\n\n${userList}</blockquote>`;
 }
 
 /**
@@ -214,7 +233,7 @@ export async function createDemonBattlesCollectionMessage(
 }
 
 /**
- * Создает оба сообщения созыва для темы
+ * Создает одно объединенное сообщение созыва для обеих типов битв
  */
 export async function createCollectionMessages(
   ctx: Context,
@@ -222,16 +241,62 @@ export async function createCollectionMessages(
   topicId: number
 ): Promise<void> {
   try {
-    // Создаем сообщение для клановых битв
-    await createClanBattlesCollectionMessage(ctx, groupId, topicId);
+    // Получаем список неотметившихся для обоих типов битв
+    const notAnsweredClan = await getUsersNotAnswered(ctx, groupId, topicId, 'clan_battles');
+    const notAnsweredDemon = await getUsersNotAnswered(ctx, groupId, topicId, 'demon_battles');
     
-    // Небольшая задержка между сообщениями
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    const notAnsweredClanText = formatNotAnsweredUsers(notAnsweredClan);
+    const notAnsweredDemonText = formatNotAnsweredUsers(notAnsweredDemon);
+
+    // Формируем объединенное сообщение
+    let message = '⚔️ <b>Созыв группы на демоническое/клановое сражение</b>\n\n';
     
-    // Создаем сообщение для демонических сражений
-    await createDemonBattlesCollectionMessage(ctx, groupId, topicId);
+    message += '⚔️ <b>Клановые сражения:</b>\n' + notAnsweredClanText + '\n\n';
+    message += '🔥 <b>Демонические сражения:</b>\n' + notAnsweredDemonText;
     
-    console.log(`[GroupCollection] ✅ Created collection messages for group ${groupId}, topic ${topicId}`);
+    const keyboard = Markup.inlineKeyboard([
+      [
+        Markup.button.callback('✅ Собрать клановые', `collection:collect:${topicId}:clan_battles`),
+      ],
+      [
+        Markup.button.callback('✅ Собрать демонические', `collection:collect:${topicId}:demon_battles`),
+      ],
+      [
+        Markup.button.callback('⏰ Перенос клановых на 10 минут', `collection:postpone:${topicId}:clan_battles`),
+        Markup.button.callback('⏰ Перенос демон. на 10 минут', `collection:postpone:${topicId}:demon_battles`),
+      ],
+      [
+        Markup.button.callback('❌ Отменить клановые', `collection:cancel:${topicId}:clan_battles`),
+        Markup.button.callback('❌ Отменить демонические', `collection:cancel:${topicId}:demon_battles`),
+      ],
+    ]);
+
+    const messageOptions: any = {
+      parse_mode: 'HTML',
+      reply_markup: keyboard.reply_markup,
+    };
+
+    // Если topicId = 1, это общий чат, не передаем message_thread_id
+    if (topicId !== 1) {
+      messageOptions.message_thread_id = topicId;
+    }
+
+    const sentMessage = await ctx.telegram.sendMessage(groupId, message, messageOptions);
+
+    // Сохраняем информацию о созывах в БД
+    const scheduledTime = new Date();
+    
+    // Сохраняем для клановых битв (если есть неотметившиеся)
+    if (notAnsweredClan.length > 0) {
+      await saveCollectionCall(groupId, topicId, 'clan_battles', sentMessage.message_id, scheduledTime);
+    }
+    
+    // Сохраняем для демонических битв (если есть неотметившиеся)
+    if (notAnsweredDemon.length > 0) {
+      await saveCollectionCall(groupId, topicId, 'demon_battles', sentMessage.message_id, scheduledTime);
+    }
+    
+    console.log(`[GroupCollection] ✅ Created unified collection message for group ${groupId}, topic ${topicId}`);
   } catch (error: any) {
     console.error('[GroupCollection] ❌ Error creating collection messages:', error);
     throw error;

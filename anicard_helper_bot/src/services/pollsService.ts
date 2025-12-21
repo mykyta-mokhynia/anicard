@@ -19,11 +19,14 @@ export async function createClanBattlesPoll(ctx: Context, chatId: number, messag
   try {
     // Проверяем, не создан ли уже опросник за сегодня для этой группы
     // ВАЖНО: Опросник один на группу в день, независимо от темы (topic_id)
-    // Используем CURDATE() для получения даты в часовом поясе сервера БД
+    // Используем дату с учетом часового пояса группы
     const { selectQuery } = await import('../db');
+    const { getGroupDateString } = await import('../utils/pollDateHelpers');
+    const todayDate = await getGroupDateString(chatId);
+    
     const existingPoll = await selectQuery(
-      `SELECT id FROM polls WHERE group_id = ? AND poll_type = ? AND poll_date = CURDATE() LIMIT 1`,
-      [chatId, 'clan_battles'],
+      `SELECT id FROM polls WHERE group_id = ? AND poll_type = ? AND poll_date = ? LIMIT 1`,
+      [chatId, 'clan_battles', todayDate],
       false
     );
 
@@ -81,11 +84,14 @@ export async function createDemonBattlesPoll(ctx: Context, chatId: number, messa
   try {
     // Проверяем, не создан ли уже опросник за сегодня для этой группы
     // ВАЖНО: Опросник один на группу в день, независимо от темы (topic_id)
-    // Используем CURDATE() для получения даты в часовом поясе сервера БД
+    // Используем дату с учетом часового пояса группы
     const { selectQuery } = await import('../db');
+    const { getGroupDateString } = await import('../utils/pollDateHelpers');
+    const todayDate = await getGroupDateString(chatId);
+    
     const existingPoll = await selectQuery(
-      `SELECT id FROM polls WHERE group_id = ? AND poll_type = ? AND poll_date = CURDATE() LIMIT 1`,
-      [chatId, 'demon_battles'],
+      `SELECT id FROM polls WHERE group_id = ? AND poll_type = ? AND poll_date = ? LIMIT 1`,
+      [chatId, 'demon_battles', todayDate],
       false
     );
 
@@ -109,13 +115,18 @@ export async function createDemonBattlesPoll(ctx: Context, chatId: number, messa
     if (sentMessage.poll) {
       const pollDate = new Date();
       const finalTopicId = messageThreadId || 1;
+      
+      // Получаем ID закрепленного сообщения из контекста (если есть)
+      const pinnedMessageId = (ctx as any).__pinnedMessageId || null;
+      
       await savePollInfo(
         chatId,
         finalTopicId,
         sentMessage.poll.id,
         'demon_battles',
         question,
-        pollDate
+        pollDate,
+        pinnedMessageId
       );
     }
     
@@ -133,6 +144,67 @@ export async function createDailyPolls(ctx: Context, groupId: number, topicId?: 
   try {
     // Если topicId не указан, используем 1 для общего чата
     const finalTopicId = topicId || 1;
+    
+    // Отправляем служебное сообщение перед созданием polls и закрепляем его
+    // Сначала открепляем старые закрепленные сообщения polls
+    try {
+      const { selectQuery, executeQuery } = await import('../db');
+      const { getGroupDateString } = await import('../utils/pollDateHelpers');
+      const todayDate = await getGroupDateString(groupId);
+      
+      // Находим старые закрепленные сообщения polls за сегодня
+      // Проверяем любой из polls за сегодня для этой группы и темы
+      const oldPinnedQuery = `
+        SELECT pinned_message_id
+        FROM polls
+        WHERE group_id = ? 
+          AND topic_id = ?
+          AND poll_date = ?
+          AND pinned_message_id IS NOT NULL
+        LIMIT 1
+      `;
+      const oldPinned = await selectQuery(oldPinnedQuery, [groupId, finalTopicId, todayDate], false);
+      
+      if (oldPinned && oldPinned.pinnedMessageId) {
+        try {
+          await ctx.telegram.unpinChatMessage(groupId, oldPinned.pinnedMessageId);
+          console.log(`[PollsService] ✅ Unpinned old poll message ${oldPinned.pinnedMessageId} for group ${groupId}`);
+        } catch (unpinError: any) {
+          console.warn(`[PollsService] ⚠️ Could not unpin old message:`, unpinError.message);
+        }
+      }
+      
+      // Отправляем служебное сообщение перед polls
+      const prePollMessage = '📊 <b>Ежедневные опросники</b>\n\nНажмите на опросники ниже, чтобы отметить свои результаты:';
+      
+      const messageOptions: any = {
+        parse_mode: 'HTML',
+      };
+      
+      if (finalTopicId !== 1) {
+        messageOptions.message_thread_id = finalTopicId;
+      }
+      
+      const prePollSentMessage = await ctx.telegram.sendMessage(groupId, prePollMessage, messageOptions);
+      
+      // Закрепляем это сообщение
+      try {
+        await ctx.telegram.pinChatMessage(groupId, prePollSentMessage.message_id, {
+          disable_notification: true,
+        });
+        console.log(`[PollsService] ✅ Pinned pre-poll message ${prePollSentMessage.message_id} for group ${groupId}`);
+        
+        // Сохраняем ID закрепленного сообщения в БД (обновим при создании первого poll)
+        // Временно сохраняем в контекст, чтобы использовать при создании polls
+        (ctx as any).__pinnedMessageId = prePollSentMessage.message_id;
+      } catch (pinError: any) {
+        console.warn(`[PollsService] ⚠️ Could not pin pre-poll message:`, pinError.message);
+      }
+      
+    } catch (prePollError: any) {
+      console.warn(`[PollsService] ⚠️ Error creating pre-poll message:`, prePollError.message);
+      // Продолжаем создание polls даже если не удалось создать предварительное сообщение
+    }
     
     // Создаем опросник "Клановые Сражения"
     await createClanBattlesPoll(ctx, groupId, finalTopicId);

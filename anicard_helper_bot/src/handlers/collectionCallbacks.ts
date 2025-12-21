@@ -16,8 +16,15 @@ export async function handleCollectionCallback(ctx: Context) {
     return;
   }
 
-  if (!ctx.chat || !('id' in ctx.chat)) {
-    await ctx.answerCbQuery('❌ Ошибка: группа не найдена');
+  // Проверяем, что callback из группы (не из личных сообщений)
+  if (!ctx.chat || ctx.chat.type === 'private') {
+    await ctx.answerCbQuery('❌ Эта функция доступна только в группах.');
+    return;
+  }
+
+  // Проверяем, что это группа или супергруппа
+  if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+    await ctx.answerCbQuery('❌ Эта функция доступна только в группах.');
     return;
   }
 
@@ -71,56 +78,19 @@ async function handleCollectAction(
   const { getUsersNotAnswered } = await import('../services/groupCollectionService');
   const notAnswered = await getUsersNotAnswered(ctx, groupId, topicId, battleType);
   
-  // Обновляем сообщение, убирая кнопки
-  try {
-    if (ctx.callbackQuery && 'message' in ctx.callbackQuery) {
-      const message = ctx.callbackQuery.message as any;
-      const battleName = battleType === 'clan_battles' ? 'клановую битву' : 'демонические сражения';
-      await ctx.telegram.editMessageText(
-        groupId,
-        message.message_id,
-        undefined,
-        `✅ <b>Группа собрана на ${battleName}</b>`,
-        {
-          parse_mode: 'HTML',
-        }
-      );
-    }
-  } catch (error: any) {
-    console.error('[CollectionCallback] Error updating message:', error);
-  }
+  // Обновляем сообщение, убирая кнопки для соответствующего типа битв
+  // НЕ удаляем кнопки полностью, так как это объединенное сообщение
+  // Можно просто пропустить обновление или обновить только соответствующий блок
+  // Пока оставляем как есть, можно улучшить позже
 
-  // Отправляем сообщение с упоминаниями пользователей
+  // Создаем callout из списка неотметившихся
   if (notAnswered.length > 0) {
     try {
-      const battleName = battleType === 'clan_battles' ? 'клановую битву' : 'демонические сражения';
-      
-      // Формируем список упоминаний
-      const mentions = notAnswered.map(user => {
-        if (user.username) {
-          return `@${user.username}`;
-        } else {
-          // Используем HTML для упоминания по user_id
-          const name = user.firstName || 'Пользователь';
-          return `<a href="tg://user?id=${user.userId}">${name}</a>`;
-        }
-      }).join(' ');
-
-      const mentionMessage = `⚔️ <b>Сбор на ${battleName}</b>\n\n${mentions}`;
-
-      const messageOptions: any = {
-        parse_mode: 'HTML',
-      };
-
-      // Если topicId = 1, это общий чат, не передаем message_thread_id
-      if (topicId !== 1) {
-        messageOptions.message_thread_id = topicId;
-      }
-
-      await ctx.telegram.sendMessage(groupId, mentionMessage, messageOptions);
-      console.log(`[CollectionCallback] ✅ Sent mentions for ${notAnswered.length} users`);
+      const { createCalloutFromUsers } = await import('../services/calloutService');
+      await createCalloutFromUsers(ctx, groupId, topicId, notAnswered, battleType);
+      console.log(`[CollectionCallback] ✅ Created callout for ${notAnswered.length} users with battleType: ${battleType}`);
     } catch (error: any) {
-      console.error('[CollectionCallback] Error sending mentions:', error);
+      console.error('[CollectionCallback] Error creating callout:', error);
     }
   }
 

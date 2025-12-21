@@ -2,11 +2,28 @@ import { Context, Markup } from 'telegraf';
 import { handleUserRegistration } from '../services/registrationService';
 
 /**
+ * Экранирует HTML символы для безопасного использования в HTML разметке
+ */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
  * Команда /register - регистрация пользователя в системе
  */
 export async function registerCommand(ctx: Context) {
-  // Проверяем, что команда вызвана в группе
-  if (!ctx.chat || !('id' in ctx.chat)) {
+  // Проверяем, что команда вызвана в группе (не в личных сообщениях)
+  if (!ctx.chat || ctx.chat.type === 'private') {
+    await ctx.reply('❌ Эта команда доступна только в группах.');
+    return;
+  }
+
+  // Проверяем, что это группа или супергруппа
+  if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+    await ctx.reply('❌ Эта команда доступна только в группах.');
     return;
   }
 
@@ -21,42 +38,39 @@ export async function registerCommand(ctx: Context) {
     // Проверяем, не зарегистрирован ли уже пользователь
     const { selectQuery } = await import('../db');
     const existingMember = await selectQuery(
-      `SELECT status FROM group_members WHERE group_id = ? AND user_id = ?`,
+      `SELECT user_id FROM group_members WHERE group_id = ? AND user_id = ? AND status = 'member'`,
       [groupId, userId],
       false
     );
 
-    if (existingMember && existingMember.status === 'member') {
+    if (existingMember) {
       // Пользователь уже зарегистрирован
       const message = 
-        'ℹ️ **Вы уже зарегистрированы!**\n\n' +
+        'ℹ️ <b>Вы уже зарегистрированы!</b>\n\n' +
         'Вы уже зарегистрированы в системе бота для этой группы.';
 
-      await ctx.reply(message, { parse_mode: 'Markdown' });
+      await ctx.reply(message, { parse_mode: 'HTML' });
       return;
     }
 
-    // Формируем mention пользователя
-    const mention = ctx.from.username 
-      ? `@${ctx.from.username}` 
-      : ctx.from.first_name 
-      ? `[${ctx.from.first_name}](tg://user?id=${ctx.from.id})` 
-      : `[пользователь](tg://user?id=${ctx.from.id})`;
+    // Формируем mention пользователя (используем HTML ссылку для избежания конфликтов)
+    const userName = escapeHtml(ctx.from.first_name || ctx.from.username || 'пользователь');
+    const mention = `<a href="tg://user?id=${ctx.from.id}">${userName}</a>`;
 
     // Показываем сообщение с подтверждением
     const message = 
-      `⚔️ **Регистрация в системе AniCard Gods**\n\n` +
+      `⚔️ <b>Регистрация в системе AniCard Gods</b>\n\n` +
       `${mention}, для участия в клановых и демонических сражениях, а также для получения уведомлений о сборах, необходимо зарегистрироваться.\n\n` +
       `Нажмите на кнопку ниже для подтверждения регистрации:`;
 
     const keyboard = Markup.inlineKeyboard([
       [
-        Markup.button.callback('✅ Подтвердить регистрацию', `registration:register:${groupId}`),
+        Markup.button.callback('✅ Подтвердить регистрацию', `registration:register:${groupId}:${userId}`),
       ],
     ]);
 
     await ctx.reply(message, {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       reply_markup: keyboard.reply_markup,
     });
   } catch (error: any) {

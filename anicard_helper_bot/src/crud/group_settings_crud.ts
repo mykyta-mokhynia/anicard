@@ -7,6 +7,7 @@ export function getGroupSettingsUpsertQuery(settings: GroupSettings): QueryInfo 
     { name: 'collection_interval_hours', value: settings.collectionIntervalHours },
     { name: 'collection_interval_minutes', value: settings.collectionIntervalMinutes },
     { name: 'topics_mode_enabled', value: settings.topicsModeEnabled },
+    { name: 'timezone', value: settings.timezone || 'Europe/Kiev' },
   ];
 
   // Only include id if it's not 0 (auto-increment)

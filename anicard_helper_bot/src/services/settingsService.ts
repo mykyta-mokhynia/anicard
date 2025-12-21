@@ -12,6 +12,40 @@ export async function showSettingsMenu(ctx: Context) {
     return;
   }
 
+  // Проверяем права администратора пользователя
+  if (ctx.from) {
+    try {
+      const member = await ctx.telegram.getChatMember(ctx.chat.id, ctx.from.id);
+      
+      if (member.status !== 'administrator' && member.status !== 'creator') {
+        const errorMsg = '❌ Эта команда доступна только администраторам.';
+        try {
+          if (ctx.callbackQuery && 'message' in ctx.callbackQuery) {
+            await ctx.editMessageText(errorMsg);
+          } else {
+            await ctx.reply(errorMsg);
+          }
+        } catch (e) {
+          await ctx.reply(errorMsg);
+        }
+        return;
+      }
+    } catch (error: any) {
+      console.error('[SettingsService] Error checking admin:', error);
+      const errorMsg = '❌ Ошибка при проверке прав администратора.';
+      try {
+        if (ctx.callbackQuery && 'message' in ctx.callbackQuery) {
+          await ctx.editMessageText(errorMsg);
+        } else {
+          await ctx.reply(errorMsg);
+        }
+      } catch (e) {
+        await ctx.reply(errorMsg);
+      }
+      return;
+    }
+  }
+
   const chat = ctx.chat;
   const isTopicsGroup = isGroupWithTopics(chat);
   const permissions = await checkBotPermissions(ctx);
@@ -39,7 +73,12 @@ export async function showSettingsMenu(ctx: Context) {
 
   // Интервалы сбора групп
   keyboard.push([
-    Markup.button.callback('⏰ Интервалы сбора групп', 'settings:intervals')
+    Markup.button.callback('⏰ Интервалы сбора групп', 'menu:intervals')
+  ]);
+
+  // Варны
+  keyboard.push([
+    Markup.button.callback('⚠️ Варны', 'menu:warns')
   ]);
 
   // Режим тем (только для групп с темами)
@@ -47,25 +86,47 @@ export async function showSettingsMenu(ctx: Context) {
     const topicsEnabled = true; // TODO: получить из базы/конфига
     const topicsIcon = topicsEnabled ? '✅' : '❌';
     keyboard.push([
-      Markup.button.callback(`${topicsIcon} Режим тем`, 'settings:topics_toggle')
+      Markup.button.callback(`${topicsIcon} Режим тем`, 'menu:topics_toggle')
     ]);
 
     if (topicsEnabled) {
       keyboard.push([
-        Markup.button.callback('📑 Настройка вкладок', 'settings:topics_config')
+        Markup.button.callback('📑 Настройка вкладок', 'menu:topics_config')
       ]);
     }
   }
 
-  // Кнопка "Назад" или "Закрыть"
+  // Кнопка "Назад"
   keyboard.push([
-    Markup.button.callback('❌ Закрыть', 'settings:close')
+    Markup.button.callback('◀️ Назад', 'menu:main')
   ]);
 
-  await ctx.reply(message, {
-    parse_mode: 'Markdown',
-    reply_markup: Markup.inlineKeyboard(keyboard).reply_markup,
-  });
+  // Проверяем, есть ли callback query (кнопка "Назад" или переход из меню)
+  // Если есть - редактируем сообщение, если нет - отправляем новое (команда /settings)
+  if (ctx.callbackQuery && ctx.callbackQuery.message && 'message_id' in ctx.callbackQuery.message) {
+    try {
+      await ctx.editMessageText(message, {
+        parse_mode: 'Markdown',
+        reply_markup: Markup.inlineKeyboard(keyboard).reply_markup,
+      });
+    } catch (error: any) {
+      // Если не удалось отредактировать (например, сообщение не изменилось), отправляем новое
+      if (error.response?.error_code === 400 && 
+          error.response?.description?.includes('message is not modified')) {
+        return;
+      }
+      // Для других ошибок отправляем новое сообщение
+      await ctx.reply(message, {
+        parse_mode: 'Markdown',
+        reply_markup: Markup.inlineKeyboard(keyboard).reply_markup,
+      });
+    }
+  } else {
+    await ctx.reply(message, {
+      parse_mode: 'Markdown',
+      reply_markup: Markup.inlineKeyboard(keyboard).reply_markup,
+    });
+  }
 }
 
 /**
@@ -120,7 +181,7 @@ export async function showIntervalsMenu(ctx: Context) {
 
   // Назад
   keyboard.push([
-    Markup.button.callback('◀️ Назад', 'settings:main')
+    Markup.button.callback('◀️ Назад', 'menu:main')
   ]);
 
   try {
@@ -191,7 +252,7 @@ export async function showHoursMenu(ctx: Context) {
 
   // Назад
   keyboard.push([
-    Markup.button.callback('◀️ Назад к интервалам', 'settings:intervals')
+    Markup.button.callback('◀️ Назад к интервалам', 'menu:intervals')
   ]);
 
   try {
@@ -254,7 +315,7 @@ export async function showMinutesMenu(ctx: Context) {
 
   // Назад
   keyboard.push([
-    Markup.button.callback('◀️ Назад к интервалам', 'settings:intervals')
+    Markup.button.callback('◀️ Назад к интервалам', 'menu:intervals')
   ]);
 
   try {
@@ -347,6 +408,7 @@ async function showTopicsConfigMenuWithData(
   const topicIcons = ['💬', '⚔️', '📊', '📢', '🎮', '🏆', '📝', '🔔', '⭐', '🎯'];
 
   // Кнопки для каждой темы (максимум 10 на страницу)
+  // Тема с ID = 1 уже отсортирована первой в getGroupTopicsFromDB
   topics.forEach((topic, index) => {
     const icon = topicIcons[index % topicIcons.length] || '📌';
     // selectQuery автоматически преобразует snake_case в camelCase
@@ -360,9 +422,12 @@ async function showTopicsConfigMenuWithData(
     }
     
     // Если название пустое или содержит "????", используем ID
-    const displayName = (topicName && topicName.trim() && !topicName.includes('????')) 
-      ? topicName.trim() 
-      : `Тема ${topicId}`;
+    // Для темы с ID = 1 всегда используем "Общий чат"
+    const displayName = topicId === 1 
+      ? 'Общий чат'
+      : (topicName && topicName.trim() && !topicName.includes('????')) 
+        ? topicName.trim() 
+        : `Тема ${topicId}`;
     
     keyboard.push([
       Markup.button.callback(
@@ -375,10 +440,10 @@ async function showTopicsConfigMenuWithData(
   // Навигация по страницам
   const navRow: any[] = [];
   if (page > 0) {
-    navRow.push(Markup.button.callback('◀️ Предыдущие', `settings:topics_config:page:${page - 1}`));
+    navRow.push(Markup.button.callback('◀️ Предыдущие', `menu:topics_config:page:${page - 1}`));
   }
   if (hasMore) {
-    navRow.push(Markup.button.callback('Следующие ▶️', `settings:topics_config:page:${page + 1}`));
+    navRow.push(Markup.button.callback('Следующие ▶️', `menu:topics_config:page:${page + 1}`));
   }
   if (navRow.length > 0) {
     keyboard.push(navRow);
@@ -387,13 +452,13 @@ async function showTopicsConfigMenuWithData(
   // Кнопка синхронизации (только на первой странице, если тем нет)
   if (page === 0 && topics.length === 0) {
     keyboard.push([
-      Markup.button.callback('🔄 Проверить снова', 'settings:topics_config')
+      Markup.button.callback('🔄 Проверить снова', 'menu:topics_config')
     ]);
   }
 
   // Назад
   keyboard.push([
-    Markup.button.callback('◀️ Назад', 'settings:main')
+    Markup.button.callback('◀️ Назад', 'menu:main')
   ]);
 
   try {
@@ -432,6 +497,12 @@ export async function showTopicSettings(ctx: Context, topicId: number, topicName
 
   // Определяем текущее состояние функций
   const currentFeatures = topicComplete?.topicFeature;
+  // Получаем текущие настройки варнов для этой группы
+  const { getWarnSettings } = await import('./warnService');
+  const warnSettings = await getWarnSettings(groupId);
+  const currentWarnTopicId = warnSettings?.reportTopicId;
+  const isCurrentWarnTopic = currentWarnTopicId === topicId;
+
   const features = [
     { 
       id: 'polls', 
@@ -454,6 +525,13 @@ export async function showTopicSettings(ctx: Context, topicId: number, topicName
       description: 'Сбор информации о группах', 
       enabled: currentFeatures?.featureGroupCollection || false 
     },
+    { 
+      id: 'warn_reports', 
+      name: 'Отчеты о варнах', 
+      icon: '⚠️', 
+      description: 'Отправка отчетов о варнах в эту тему', 
+      enabled: isCurrentWarnTopic 
+    },
   ];
 
   const keyboard: any[] = [];
@@ -470,7 +548,7 @@ export async function showTopicSettings(ctx: Context, topicId: number, topicName
 
   // Назад
   keyboard.push([
-    Markup.button.callback('◀️ Назад к вкладкам', 'settings:topics_config')
+    Markup.button.callback('◀️ Назад к вкладкам', 'menu:topics_config')
   ]);
 
   try {

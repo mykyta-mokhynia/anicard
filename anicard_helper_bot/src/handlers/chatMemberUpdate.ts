@@ -47,7 +47,18 @@ export async function handleChatMemberUpdate(ctx: Context) {
 
   try {
     if (wasAdded) {
-      // Пользователь присоединился к группе
+      // Пользователь присоединился к группе (или вернулся)
+      // Сначала проверяем, был ли пользователь новым (не было записи) или вернулся (был статус 'left')
+      const { selectQuery } = await import('../db');
+      const previousMember = await selectQuery(
+        `SELECT status FROM group_members WHERE group_id = ? AND user_id = ?`,
+        [chatId, userId],
+        false
+      );
+      
+      const wasNewUser = !previousMember;
+      
+      // Восстанавливаем статус 'member', если пользователь был со статусом 'left'
       await upsertGroupMember(
         chatId,
         userId,
@@ -57,27 +68,30 @@ export async function handleChatMemberUpdate(ctx: Context) {
         'member'
       );
       
-      // Отправляем приветственное сообщение новому пользователю
-      try {
-        await sendWelcomeMessageToUser(
-          ctx,
-          chatId,
-          userId,
-          user.first_name,
-          user.username
-        );
-      } catch (welcomeError: any) {
-        console.error(`[ChatMember] Error sending welcome message:`, welcomeError);
-        // Не критично, продолжаем
+      // Отправляем приветственное сообщение только новым пользователям (не тем, кто вернулся)
+      if (wasNewUser) {
+        try {
+          await sendWelcomeMessageToUser(
+            ctx,
+            chatId,
+            userId,
+            user.first_name,
+            user.username
+          );
+        } catch (welcomeError: any) {
+          console.error(`[ChatMember] Error sending welcome message:`, welcomeError);
+          // Не критично, продолжаем
+        }
       }
       
-      console.log(`[ChatMember] ✅ User ${userId} joined group ${chatId}`);
+      console.log(`[ChatMember] ✅ User ${userId} joined/returned to group ${chatId}`);
     } else if (wasRemoved) {
-      // Пользователь покинул группу
+      // Пользователь покинул группу - помечаем статус 'left' (не удаляем)
       await removeGroupMember(chatId, userId);
-      console.log(`[ChatMember] ✅ User ${userId} left group ${chatId}`);
+      console.log(`[ChatMember] ✅ User ${userId} left group ${chatId} (status set to 'left')`);
     } else if (newStatus === 'member' || newStatus === 'administrator' || newStatus === 'creator' || newStatus === 'restricted') {
       // Обновляем информацию о пользователе (например, изменился username)
+      // Также восстанавливаем статус 'member', если пользователь был со статусом 'left'
       await upsertGroupMember(
         chatId,
         userId,

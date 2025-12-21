@@ -5,8 +5,15 @@ import { createDailyPolls } from '../services/pollsService';
  * Команда /polls - создает опросники (только для админов)
  */
 export async function pollsCommand(ctx: Context) {
-  // Проверяем, что команда вызвана в группе
-  if (!ctx.chat || !('id' in ctx.chat)) {
+  // Проверяем, что команда вызвана в группе (не в личных сообщениях)
+  if (!ctx.chat || ctx.chat.type === 'private') {
+    await ctx.reply('❌ Эта команда доступна только в группах.');
+    return;
+  }
+
+  // Проверяем, что это группа или супергруппа
+  if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+    await ctx.reply('❌ Эта команда доступна только в группах.');
     return;
   }
 

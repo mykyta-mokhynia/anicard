@@ -4,6 +4,7 @@ export interface GroupSettings {
   collectionIntervalHours: number;
   collectionIntervalMinutes: number;
   topicsModeEnabled: boolean;
+  timezone?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }

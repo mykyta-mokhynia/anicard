@@ -5,8 +5,15 @@ import { removeGroupMember } from '../services/groupMembersService';
  * Команда /unregister - отмена регистрации пользователя в системе
  */
 export async function unregisterCommand(ctx: Context) {
-  // Проверяем, что команда вызвана в группе
-  if (!ctx.chat || !('id' in ctx.chat)) {
+  // Проверяем, что команда вызвана в группе (не в личных сообщениях)
+  if (!ctx.chat || ctx.chat.type === 'private') {
+    await ctx.reply('❌ Эта команда доступна только в группах.');
+    return;
+  }
+
+  // Проверяем, что это группа или супергруппа
+  if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+    await ctx.reply('❌ Эта команда доступна только в группах.');
     return;
   }
 
@@ -21,12 +28,12 @@ export async function unregisterCommand(ctx: Context) {
     // Проверяем, зарегистрирован ли пользователь
     const { selectQuery } = await import('../db');
     const existingMember = await selectQuery(
-      `SELECT status FROM group_members WHERE group_id = ? AND user_id = ?`,
+      `SELECT user_id FROM group_members WHERE group_id = ? AND user_id = ?`,
       [groupId, userId],
       false
     );
 
-    if (!existingMember || existingMember.status !== 'member') {
+    if (!existingMember) {
       // Пользователь не зарегистрирован
       const message = 
         'ℹ️ **Вы не зарегистрированы**\n\n' +
@@ -36,7 +43,7 @@ export async function unregisterCommand(ctx: Context) {
       return;
     }
 
-    // Отменяем регистрацию (помечаем как left)
+    // Отменяем регистрацию (удаляем из БД)
     await removeGroupMember(groupId, userId);
 
     const message = 

@@ -3,11 +3,21 @@ import { executeQuery, selectQuery } from '../db';
 import { upsertGroupMember } from './groupMembersService';
 
 /**
+ * Экранирует HTML символы для безопасного использования в HTML разметке
+ */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
  * Создает и закрепляет сообщение с кнопкой регистрации
  */
 export async function createRegistrationMessage(ctx: Context, groupId: number): Promise<number | null> {
   const message = 
-    '⚔️ **Регистрация участников клана AniCard Gods**\n\n' +
+    '⚔️ <b>Регистрация участников клана AniCard Gods</b>\n\n' +
     'Это необходимо для всех участников клана!\n\n' +
     'Для участия в клановых и демонических сражениях, а также для получения уведомлений о сборах, необходимо зарегистрироваться в системе бота.\n\n' +
     'Нажмите на кнопку ниже для регистрации:';
@@ -20,7 +30,7 @@ export async function createRegistrationMessage(ctx: Context, groupId: number): 
 
   try {
     const sentMessage = await ctx.telegram.sendMessage(groupId, message, {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       reply_markup: keyboard.reply_markup,
     });
 
@@ -54,11 +64,8 @@ export async function sendWelcomeMessageToUser(
   firstName?: string,
   username?: string
 ): Promise<void> {
-  const mention = username 
-    ? `@${username}` 
-    : firstName 
-    ? firstName 
-    : 'друг';
+  const userName = escapeHtml(firstName || username || 'друг');
+  const mention = `<a href="tg://user?id=${userId}">${userName}</a>`;
 
   const message = 
     `Привет, ${mention}! 👋\n\n` +
@@ -73,37 +80,16 @@ export async function sendWelcomeMessageToUser(
   ]);
 
   try {
-    // Пытаемся отправить личное сообщение
-    try {
-      await ctx.telegram.sendMessage(userId, message, {
-        reply_markup: keyboard.reply_markup,
-      });
-      console.log(`[Registration] ✅ Sent welcome message to user ${userId} (private)`);
-      return;
-    } catch (privateError: any) {
-      // Если не удалось отправить личное сообщение (пользователь не начал диалог с ботом),
-      // отправляем в группу с mention
-      console.log(`[Registration] Could not send private message to user ${userId}, sending to group`);
-      
-      // Формируем mention для группы (используем Markdown или HTML)
-      const userMention = username 
-        ? `@${username}` 
-        : firstName 
-        ? `[${firstName}](tg://user?id=${userId})` 
-        : `[друг](tg://user?id=${userId})`;
+    // НЕ отправляем кнопку регистрации в личные сообщения
+    // Регистрация должна происходить только в группах
+    // Отправляем только приветственное сообщение в группе
+    console.log(`[Registration] Sending welcome message to user ${userId} in group ${groupId}`);
 
-      const groupMessage = 
-        `Привет, ${userMention}! 👋\n\n` +
-        `Добро пожаловать в AniCard Gods! 🎮⚔️\n\n` +
-        `Для участия в клановых и демонических сражениях, а также для получения уведомлений о сборах, необходимо зарегистрироваться в системе бота.\n\n` +
-        `Нажмите на кнопку ниже для регистрации:`;
-
-      await ctx.telegram.sendMessage(groupId, groupMessage, {
-        parse_mode: 'Markdown',
-        reply_markup: keyboard.reply_markup,
-      });
-      console.log(`[Registration] ✅ Sent welcome message to user ${userId} (in group)`);
-    }
+    await ctx.telegram.sendMessage(groupId, message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard.reply_markup,
+    });
+    console.log(`[Registration] ✅ Sent welcome message to user ${userId} (in group)`);
   } catch (error: any) {
     console.error(`[Registration] ❌ Error sending welcome message to user ${userId}:`, error);
   }
@@ -118,14 +104,21 @@ export async function handleUserRegistration(
   userId: number
 ): Promise<boolean> {
   try {
+    // Дополнительная проверка: ID группы должен быть отрицательным
+    // Группы в Telegram имеют отрицательные ID, личные чаты - положительные
+    if (groupId > 0) {
+      console.warn(`[Registration] ❌ Invalid group ID (positive): ${groupId}. Groups must have negative IDs.`);
+      throw new Error('Регистрация возможна только в группах. ID группы должен быть отрицательным.');
+    }
+
     // Проверяем, не зарегистрирован ли уже пользователь
     const existingMember = await selectQuery(
-      `SELECT status FROM group_members WHERE group_id = ? AND user_id = ?`,
+      `SELECT user_id FROM group_members WHERE group_id = ? AND user_id = ? AND status = 'member'`,
       [groupId, userId],
       false
     );
 
-    if (existingMember && existingMember.status === 'member') {
+    if (existingMember) {
       // Пользователь уже зарегистрирован
       return false;
     }
