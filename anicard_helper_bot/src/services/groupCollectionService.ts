@@ -49,9 +49,8 @@ export async function getUsersNotAnswered(
       topicId: p.topicId,
       date: p.pollDate
     })));
-    // Если опросника нет, возвращаем всех активных участников группы
-    const { getActiveGroupMembers } = await import('./groupMembersService');
-    return await getActiveGroupMembers(groupId);
+    // Если опросника нет, возвращаем пустой список (нельзя призывать всех, если нет опросника)
+    return [];
   }
 
   console.log(`[GroupCollection] ✅ Found poll for today (group ${groupId}, topic ${topicId}, type ${battleType}, poll_topic_id=${poll.topicId})`);

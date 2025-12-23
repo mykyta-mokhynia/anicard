@@ -11,6 +11,7 @@ import { handleCollectionCallback } from './handlers/collectionCallbacks';
 import { handleChatMemberUpdate } from './handlers/chatMemberUpdate';
 import { handleRegistrationCallback } from './handlers/registrationCallbacks';
 import { handleUsersCallback } from './handlers/usersCallbacks';
+import { handlePrivateMenuCallback } from './handlers/privateMenuCallbacks';
 import { initPool } from './db';
 import { executeQuery } from './db';
 import { initScheduler } from './services/schedulerService';
@@ -248,6 +249,16 @@ bot.on('poll_answer', async (ctx) => {
 bot.on('callback_query', async (ctx, next) => {
   if ('data' in ctx.callbackQuery) {
     const data = ctx.callbackQuery.data;
+    // Обработка меню в личных сообщениях (должна быть первой, так как может конфликтовать с menu:)
+    if (data.startsWith('private:')) {
+      await handlePrivateMenuCallback(ctx);
+      return;
+    }
+    // Обработка управления аккаунтами (inline-кнопки)
+    if (data.startsWith('accounts:')) {
+      await handlePrivateMenuCallback(ctx);
+      return;
+    }
     if (data.startsWith('menu:') || data.startsWith('interval:') || data.startsWith('topic:') || data.startsWith('warn:')) {
       await handleSettingsCallback(ctx);
       return;
@@ -294,6 +305,63 @@ bot.on('text', async (ctx, next) => {
     return next();
   }
 
+  // Обработка reply keyboard в личных сообщениях
+  if (ctx.chat && ctx.chat.type === 'private' && ctx.message && 'text' in ctx.message) {
+    const text = ctx.message.text.trim();
+    
+    // Проверяем, находится ли пользователь в процессе добавления аккаунта / настройки групп
+    if (ctx.from) {
+      const { AccountAddService } = await import('./services/accountAddService');
+      const accountAddService = new AccountAddService();
+      const state = accountAddService.getState(ctx.from.id);
+      
+      if (state) {
+        console.log(`[AccountAdd] User ${ctx.from.id} is in state: ${state.state}`);
+        const { AccountAddState } = await import('./services/accountAddStateService');
+
+        const lowerText = text.toLowerCase();
+        // Универсальная команда отмены процесса (учитываем эмодзи и лишние символы)
+        const normalized = lowerText.replace(/[^a-zа-яё]/gi, '');
+        if (['отмена', 'cancel', 'стоп', 'stop'].includes(normalized)) {
+          accountAddService.cancelProcess(ctx.from.id);
+
+          // Кратко показываем, что действие отменено и убираем клавиатуру
+          await ctx.reply('❌ Действие отменено.', {
+            reply_markup: { remove_keyboard: true },
+          });
+
+          return;
+        }
+
+        if (state.state === AccountAddState.WAITING_PHONE) {
+          console.log(`[AccountAdd] Processing phone number: ${text}`);
+          const handled = await accountAddService.handlePhoneNumber(ctx, text);
+          if (handled) return;
+        } else if (state.state === AccountAddState.WAITING_CODE) {
+          console.log(`[AccountAdd] Processing code: ${text}`);
+          const handled = await accountAddService.handleCode(ctx, text);
+          if (handled) return;
+        } else if (state.state === AccountAddState.WAITING_API_ID) {
+          console.log(`[AccountAdd] Processing API ID: ${text}`);
+          const handled = await accountAddService.handleApiId(ctx, text);
+          if (handled) return;
+        } else if (state.state === AccountAddState.WAITING_API_HASH) {
+          console.log(`[AccountAdd] Processing API Hash: ${text}`);
+          const handled = await accountAddService.handleApiHash(ctx, text);
+          if (handled) return;
+        }
+      } else {
+        console.log(`[AccountAdd] User ${ctx.from.id} is not in account add process`);
+      }
+    }
+    
+    const { handlePrivateMenuText } = await import('./handlers/privateMenuCallbacks');
+    const handled = await handlePrivateMenuText(ctx, text);
+    if (handled) {
+      return; // Сообщение обработано, не продолжаем дальше
+    }
+  }
+
   // Проверяем, что это сообщение в группе
   if (!ctx.chat || (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup')) {
     return next();
@@ -310,8 +378,9 @@ bot.on('text', async (ctx, next) => {
   if ('text' in ctx.message!) {
     const messageText = ctx.message.text.trim().toLowerCase();
 
-    // Проверяем, является ли текст командой "Анрег" или "анрег" (регистр не важен)
-    if (messageText === 'анрег' || messageText === 'unreg') {
+    // Проверяем, начинается ли текст с команды "Анрег" или "unreg" (регистр не важен)
+    // Работает как точное совпадение, так и когда после команды есть текст
+    if (messageText.startsWith('анрег') || messageText.startsWith('unreg')) {
       const { unregCommand } = await import('./commands/unreg');
       await unregCommand(ctx);
       return; // Не вызываем next(), так как команда уже обработана
