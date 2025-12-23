@@ -1,4 +1,6 @@
 import { Context } from 'telegraf';
+import { getUserByTelegramId } from '../services/userService';
+import { AccessLevel } from '../types/user';
 
 interface RateLimitEntry {
   count: number;
@@ -42,6 +44,16 @@ export async function rateLimit(ctx: Context, next: () => Promise<void>) {
   // Исключаем ботов из rate limiting (включая самого бота)
   if (ctx.from.is_bot) {
     return next();
+  }
+
+  // Исключаем модераторов и выше из rate limiting (блокируем только обычных пользователей)
+  try {
+    const user = await getUserByTelegramId(ctx.from.id);
+    if (user && user.accessLevel >= AccessLevel.MODERATOR) {
+      return next();
+    }
+  } catch {
+    // Если не удалось получить пользователя, продолжаем как обычно
   }
 
   // Пропускаем все сообщения из групп и супергрупп (там много активности)

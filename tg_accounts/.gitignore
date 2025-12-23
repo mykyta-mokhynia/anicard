@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.env
+*.session
+*.session-journal
+accounts/
+*.sqlite
+.DS_Store
+

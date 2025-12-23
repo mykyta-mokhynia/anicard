@@ -1,0 +1,29 @@
+{
+  "name": "anicard-monorepo",
+  "version": "1.0.0",
+  "description": "AniCard project monorepo - bot and accounts management",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n \"BOT,AUTH\" -c \"cyan,green\" \"npm run dev:bot\" \"npm run dev:auth\"",
+    "dev:bot": "cd anicard_helper_bot && npm run dev",
+    "dev:auth": "cd tg_accounts && python3 auth_service.py",
+    "start": "npm run build && concurrently -n \"BOT,AUTH\" -c \"cyan,green\" \"npm run start:bot\" \"npm run start:auth\"",
+    "start:bot": "cd anicard_helper_bot && npm start",
+    "start:auth": "cd tg_accounts && python3 auth_service.py",
+    "build": "npm run build:bot",
+    "build:bot": "cd anicard_helper_bot && npm run build",
+    "auth:install": "cd tg_accounts && pip3 install -r requirements.txt",
+    "install:all": "npm install && cd anicard_helper_bot && npm install"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "monorepo"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
+

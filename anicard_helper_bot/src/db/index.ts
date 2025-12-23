@@ -30,7 +30,9 @@ export function initPool(): mysql.Pool {
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
     typeCast(field: any, next: any) {
-      if (field.type === 'TINY') {
+      // Преобразуем TINYINT в boolean только для полей типа boolean (не для access_level)
+      // access_level должен оставаться числом (0-5)
+      if (field.type === 'TINY' && field.name !== 'access_level') {
         const val = field.string();
         return val === null ? null : val === '1';
       }

@@ -1,0 +1,16 @@
+{
+  "api": {
+    "enabled": true,
+    "useMainApi": true
+  },
+  "settings": {
+    "maxAccounts": 4,
+    "description": "Основные аккаунты для сбора карт",
+    "isMainGroup": true,
+    "cardCollection": {
+      "enabled": true,
+      "autoTransfer": true
+    }
+  }
+}
+
